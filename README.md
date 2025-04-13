@@ -1,18 +1,18 @@
-# Linux Performance Monitor (lpm)
+# Linux System Performance And Stability Monitor
 
 [![Python Version](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Linux系统性能指标的工具集
+Linux System Performance And Stability Monitor
 
-## 功能特性
-- CPU使用率监控
-- 内存/交换空间统计
-- 磁盘I/O和存储分析
-- 网络流量监控
-- 可定制的报告生成
+## architecture
 
-## 安装
+
+## Build
 ```bash
-pip install -r requirements.txt
-python setup.py install
+apt install clang libelf1 libelf-dev zlib1g-dev
+
+git clone --recurse-submodules https://github.com/JiaoTuan/monitor.git
+cd toole/bpf/
+make
+```
