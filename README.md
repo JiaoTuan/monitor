@@ -10,9 +10,15 @@ Linux System Performance And Stability Monitor
 
 ## Build
 ```bash
-apt install clang libelf1 libelf-dev zlib1g-dev
-
 git clone --recurse-submodules https://github.com/JiaoTuan/monitor.git
+```
+### ebpf tools build
+```bash
+apt install clang libelf1 libelf-dev zlib1g-dev
 cd toole/bpf/
 make
+```
+### usage
+```bash
+python3 ./lpm/cli.py --check=True --verbose=True
 ```
