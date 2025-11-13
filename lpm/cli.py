@@ -1,442 +1,397 @@
+import sys
 import click
 from time import sleep
-import lpm
-from lpm import get_network_monitor
+from pathlib import Path
 
-def display_network(interface: str, interval: float):
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from core.linux.memory import MemoryLinuxMonitor
+
+# 初始化监控器
+memory_monitor = None
+
+def get_monitor():
+    """懒加载监控器"""
+    global memory_monitor
+    if memory_monitor is None:
+        memory_monitor = MemoryLinuxMonitor(output_dir="./out/memory/")
+    return memory_monitor
+
+@click.group()
+def cli():
+    """Linux 性能和稳定性监控工具"""
+    pass
+
+# ============================================================================
+# 内存监控命令组
+# ============================================================================
+
+@cli.group()
+def memory():
+    """内存监控和分析工具"""
+    pass
+
+@memory.command()
+def status():
+    """显示当前内存状态"""
     try:
-        stats = network_stats(interface)
-        up, down = network_speed(interface, interval)
+        monitor = get_monitor()
+        mem_stats = monitor.get_memory_stats()
+        swap_stats = monitor.get_swap_stats()
+        pressure = monitor.get_memory_pressure()
         
-        click.echo(f"\n📶 网卡 [{interface}]")
-        click.echo(f"   📤 实时: {up:.2f}↑ {down:.2f}↓ MB/s")
-        click.echo(f"   📊 累计: {stats['bytes_sent']/1024**2:.1f}↑ {stats['bytes_recv']/1024**2:.1f}↓ MB")
-        click.echo(f"   ⚠️ 错误: 输入{stats['errors_in']} 输出{stats['errors_out']}")
-        click.echo(f"   ❌ 丢包: 输入{stats['drop_in']} 输出{stats['drop_out']}")
+        click.secho("\n📊 当前内存状态", fg='cyan', bold=True)
+        
+        # 内存基础信息
+        click.echo("\n[物理内存]")
+        click.echo(f"  总内存:     {mem_stats.total / (1024**3):8.2f} GB")
+        
+        # 内存使用率颜色
+        mem_color = (
+            'red' if mem_stats.percent > 80 
+            else 'yellow' if mem_stats.percent > 60 
+            else 'green'
+        )
+        mem_percent_str = click.style(
+            f"({mem_stats.percent:.1f}%)", 
+            fg=mem_color
+        )
+        click.echo(f"  已用:       {mem_stats.used / (1024**3):8.2f} GB {mem_percent_str}")
+        
+        click.echo(f"  可用:       {mem_stats.available / (1024**3):8.2f} GB")
+        click.echo(f"  空闲:       {mem_stats.free / (1024**3):8.2f} GB")
+        
+        # 内存分布
+        click.echo("\n[内存分布]")
+        click.echo(f"  缓存:       {mem_stats.cached / (1024**3):8.2f} GB")
+        click.echo(f"  缓冲区:     {mem_stats.buffers / (1024**3):8.2f} GB")
+        click.echo(f"  Active:     {mem_stats.active / (1024**3):8.2f} GB")
+        click.echo(f"  Inactive:   {mem_stats.inactive / (1024**3):8.2f} GB")
+        click.echo(f"  共享内存:   {mem_stats.shared / (1024**3):8.2f} GB")
+        
+        # Swap 信息
+        click.echo("\n[Swap 内存]")
+        click.echo(f"  总大小:     {swap_stats.total / (1024**3):8.2f} GB")
+        
+        # Swap 使用率颜色
+        swap_color = (
+            'red' if swap_stats.percent > 50 
+            else 'yellow' if swap_stats.percent > 20 
+            else 'green'
+        )
+        swap_percent_str = click.style(
+            f"({swap_stats.percent:.1f}%)", 
+            fg=swap_color
+        )
+        click.echo(f"  已用:       {swap_stats.used / (1024**3):8.2f} GB {swap_percent_str}")
+        
+        click.echo(f"  空闲:       {swap_stats.free / (1024**3):8.2f} GB")
+        click.echo(f"  换入:       {swap_stats.sin:12,d} 页")
+        click.echo(f"  换出:       {swap_stats.sout:12,d} 页")
+        
+        # 内存压力
+        click.echo("\n[内存压力指标]")
+        click.echo(f"  缺页:       {pressure.page_faults:12,d}")
+        click.echo(f"  主缺页:     {pressure.major_faults:12,d}")
+        click.echo(f"  页扫描:     {pressure.reclaim_stalls:12,d}")
+        click.echo(f"  页回收:     {pressure.direct_reclaim:12,d}")
+        click.echo(f"  OOM Kill:   {pressure.oom_kills:12,d}")
+        
+        # 碎片化
+        frag = monitor.get_memory_fragmentation()
+        click.echo("\n[内存碎片化]")
+        click.echo(f"  碎片指数:   {frag.extfrag_index:8.2f}")
+        click.echo(f"  碎片百分比: {frag.fragmentation_percent:8.1f}%")
+        click.echo()
+        
     except Exception as e:
-        click.echo(f"\n❌ 网卡 {interface} 错误: {str(e)}")
+        click.secho(f"❌ 获取内存状态失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
 
-def check_ringbuffer():
-    """检测网卡Ring Buffer丢包情况"""
-    monitor = lpm.get_network_monitor()
-    
-    results = monitor.check_ringbuffer_drops()
-    has_issue = False
-    
-    for interface, message in results.items():
-        if message is None:
-            click.echo(f"✅ {interface}: PASS")
+@memory.command()
+def health():
+    """检查内存健康状态"""
+    try:
+        monitor = get_monitor()
+        is_healthy, issues = monitor.check_memory_health()
+        
+        if is_healthy:
+            click.secho("✅ 内存状态良好", fg='green', bold=True)
         else:
-            has_issue = True
-            click.echo(f"❌ {interface}: {message}")
-    
-    if has_issue:
-        click.echo("\n💡 全局建议:")
-        click.echo("1. 临时调整: 执行上述ethtool命令")
-        click.echo("2. 永久生效: 将命令添加到/etc/rc.local")
-        click.echo("3. 监控效果: watch -n 1 'ethtool -S eth0 | grep drop'")
-
-def check_network(interface, verbose):
-    """网络接口健康检查（支持详细模式）"""
-    monitor = get_network_monitor()
-    
-    # 获取健康数据
-    try:
-        all_health = monitor.check_interface_health()
+            click.secho("❌ 检测到内存问题:", fg='red', bold=True)
+            for issue in issues:
+                click.echo(f"  {issue}")
+        click.echo()
+                
     except Exception as e:
-        click.secho(f"❌ 数据获取失败: {str(e)}", fg='red', err=True)
-        return
+        click.secho(f"❌ 健康检查失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
 
-    # 确定检查范围
-    interfaces_to_check = (
-        [interface] if interface 
-        else sorted(all_health.keys())  # 按字母排序
-    )
-
-    # 检查并输出结果
-    has_issues = False
-    for iface in interfaces_to_check:
-        if iface not in all_health:
-            click.secho(f"⚠️ 接口不存在: {iface}", fg='yellow', err=True)
-            continue
-
-        health = all_health[iface]
-        is_problematic = any([
-            health.rx_errors > 0,
-            health.rx_overruns > 0,
-            health.tx_errors > 0,
-            health.softnet_dropped > 0
-        ])
-
-        # 只在发现问题或verbose模式下显示
-        if is_problematic or verbose:
-            click.echo(f"\n📡 接口 [ {iface} ] {'(异常)' if is_problematic else '(正常)'}")
-            
-            # 详细指标表格
-            if verbose:
-                from rich.table import Table
-                from rich.console import Console
-                
-                console = Console()
-                table = Table(title="详细指标", show_header=True)
-                table.add_column("类型", style="cyan")
-                table.add_column("Errors", justify="right")
-                table.add_column("Dropped", justify="right")
-                table.add_column("Overruns", justify="right")
-                
-                table.add_row(
-                    "RX",
-                    str(health.rx_errors),
-                    str(health.rx_dropped),
-                    str(health.rx_overruns)
-                )
-                table.add_row(
-                    "TX",
-                    str(health.tx_errors),
-                    str(health.tx_dropped),
-                    str(health.tx_overruns)
-                )
-                console.print(table)
-            else:
-                # 简洁模式输出
-                click.echo(f"  RX errors: {health.rx_errors} | dropped: {health.rx_dropped} | overruns: {health.rx_overruns}")
-                click.echo(f"  TX errors: {health.tx_errors} | dropped: {health.tx_dropped} | overruns: {health.tx_overruns}")
-
-        # 诊断建议
-        advice = monitor.get_health_advice(iface, health)
-        if advice:
-            has_issues = True
-            click.secho("  ⚠️ 发现问题:", fg='yellow')
-            for item in advice:
-                click.echo(f"    • {item}")
-        elif verbose:
-            click.secho("  ✅ 所有指标正常", fg='green')
-
-    # 总结报告
-    if has_issues:
-        click.secho("\n💡 修复建议:", fg='cyan')
-        click.echo("1. 临时调整: 使用上述命令立即修改参数")
-        click.echo("2. 永久生效: 将配置写入/etc/sysctl.conf或/etc/rc.local")
-        click.echo("3. 监控变化: watch -n 1 'cat /proc/net/softnet_stat'")
-    elif not verbose:
-        click.secho("\n✅ 所有接口检查通过", fg='green')
-
-def check_arp(verbose):
-    """网络诊断工具"""
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 ARP系统诊断报告", fg='cyan', bold=True)
-
-    # 1. 检查arp_ignore
-    value, advice = monitor.check_arp_ignore()
-    if verbose or advice:
-        click.echo(f"\n[ARP Ignore] 当前值: {value}")
-        for msg in advice:
-            click.secho(msg, fg='yellow')
-
-    # 2. 检查arp_filter  
-    value, advice = monitor.check_arp_filter()
-    if verbose or advice:
-        click.echo(f"\n[ARP Filter] 当前值: {value}")
-        for msg in advice:
-            click.secho(msg, fg='yellow')
-
-    # 3. 检查ARP表溢出
-    is_overflow, advice = monitor.check_arp_table_overflow()
-    if verbose or is_overflow:
-        status = "⚠️ 异常" if is_overflow else "✅ 正常"
-        click.echo(f"\n[ARP表状态] {status}")
-        for msg in advice:
-            click.secho(msg, fg='red' if is_overflow else 'yellow')
-
-    # 4. 检查ARP队列溢出
-    is_overflow, advice = monitor.check_arp_queue_overflow()
-    if verbose or is_overflow:
-        status = "⚠️ 异常" if is_overflow else "✅ 正常"
-        click.echo(f"\n[ARP队列] {status}")
-        for msg in advice:
-            click.secho(msg, fg='red' if is_overflow else 'yellow')
-
-def check_connect_track():
-    """connect track网络诊断工具"""
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 连接跟踪诊断报告", fg='cyan', bold=True)
-
-    # 1. 检查表溢出
-    is_overflow, advice = monitor.check_conntrack_overflow()
-    if is_overflow or True:  # 总是显示此检查项
-        status = "⚠️ 异常" if is_overflow else "✅ 正常" 
-        click.echo(f"\n[表溢出检测] {status}")
-        for msg in advice:
-            click.secho(msg, fg='red' if is_overflow else 'yellow')
-
-    # 2. 检查创建错误
-    errors, advice = monitor.check_conntrack_errors()
-    if any(errors.values()):
-        click.echo("\n[创建错误检测] ⚠️ 异常")
-        for msg in advice:
-            click.secho(msg, fg='red')
-    else:
-        click.echo("\n[创建错误检测] ✅ 正常")
-
-    # 3. 检查老化时间
-    has_issue, advice = monitor.check_conntrack_aging()
-    if has_issue:
-        click.echo("\n[老化时间检测] ⚠️ 异常")
-        for msg in advice:
-            click.secho(msg, fg='yellow')
-    else:
-        click.echo("\n[老化时间检测] ✅ 正常")
-
-def check_ip_fragment():
-    """网络诊断工具"""
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 IP分片重组诊断", fg='cyan', bold=True)
-    health, advice = monitor.check_ip_fragmentation()
-
-    click.echo(f"\n📊 分片统计:")
-    click.echo(f"  超时丢包数: {health.timeout_drops}")
-    click.echo(f"  重组失败数: {health.reassembly_fails}")
-
-    click.echo("\n⚙️ 当前内核参数:")
-    click.echo(f"  ipfrag_time: {health.frag_timeout}秒")
-    click.echo(f"  ipfrag_high_thresh: {health.frag_high_thresh}字节")
-    click.echo(f"  ipfrag_low_thresh: {health.frag_low_thresh}字节")
-
-    if advice:
-        click.secho("\n⚠️ 发现问题:", fg='yellow')
-        for msg in advice:
-            click.echo(msg)
-    else:
-        click.secho("\n✅ 未检测到分片重组问题", fg='green')
-
-def check_tcp_timewait():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 TCP TIMEWAIT 诊断报告", fg='cyan', bold=True)
-    
-    health, advice = monitor.check_tcp_timewait()
-    
-    # 显示基础状态
-    click.echo("\n[基本状态]")
-    click.echo(f"  最大TIME-WAIT数量: {health.max_tw_buckets or 'N/A'}")
-    click.echo(f"  当前TIME-WAIT数量: {health.current_tw or 'N/A'}")
-    click.echo(f"  超时时间: {health.timewait_timeout or 'N/A'}秒")
-    
-    # 显示问题和建议
-    if advice:
-        click.secho("\n[问题检测]", fg='red' if health.overflow_drops else 'yellow')
-        for msg in advice:
-            lines = msg.split('\n')
-            first_line = lines[0]
-            rest_lines = lines[1:] if len(lines) > 1 else []
-            
-            if first_line.startswith("⚠️"):
-                click.secho(first_line, fg='yellow')
-            else:
-                click.echo(first_line)
-            
-            for line in rest_lines:
-                click.echo(f"  {line}")
-    else:
-        click.secho("\n[状态] ✅ 未检测到异常", fg='green')
-
-def check_tcp_connectqueue():
-    """网络诊断工具"""
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 TCP队列诊断报告", fg='cyan', bold=True)
-    
-    health, advice = monitor.check_tcp_queue()
-    
-    # 显示基础统计
-    click.echo("\n[基础统计]")
-    click.echo(f"  SYN丢弃数: {health.syn_drops or 0}")
-    click.echo(f"  队列溢出次数: {health.queue_overflows or 0}")
-    click.echo(f"  系统somaxconn值: {health.somaxconn or '未知'}")
-    
-    # 显示详细问题和建议
-    if advice:
-        click.secho("\n[问题诊断]", fg='yellow')
-        for msg in advice:
-            # 格式化输出带缩进的多行建议
-            lines = msg.split('\n')
-            click.secho(lines[0], fg='red' if '丢弃' in lines[0] else 'yellow')
-            for line in lines[1:]:
-                click.echo(f"  {line}")
-    else:
-        click.secho("\n[状态] ✅ 未检测到队列异常", fg='green')
-
-def check_syn_flood():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 SYN Flood攻击检测", fg='cyan', bold=True)
-    
-    health, advice = monitor.check_syn_flood()
-    
-    # 显示基础信息
-    click.echo("\n[当前防护参数]")
-    click.echo(f"  tcp_max_syn_backlog: {health.current_backlog or '默认'}")
-    click.echo(f"  tcp_synack_retries: {health.current_synack_retries or '默认'}")
-    
-    # 显示检测结果和建议
-    if health.detected:
-        click.secho("\n[攻击检测]", fg='red')
-        click.echo(f"受攻击端口: {', '.join(health.attack_ports)}")
-        
-        click.secho("\n[防御建议]", fg='yellow')
-        for msg in advice:
-            # 格式化多行输出
-            lines = msg.split('\n')
-            if lines[0].startswith("⚠️"):
-                click.secho(lines[0], fg='red')
-            else:
-                click.echo(lines[0])
-            
-            for line in lines[1:]:
-                if line.strip():
-                    click.echo(f"  {line}")
-    else:
-        click.secho("\n[状态] ✅ 未检测到SYN Flood攻击迹象", fg='green')
-
-def check_tcp_timestamp():
-    """网络诊断工具"""
-    monitor = get_network_monitor()
-
-
-    click.secho("\n🔍 TCP时间戳机制检测", fg='cyan', bold=True)
-    
-    health, advice = monitor.check_tcp_timestamp()
-    
-    # 显示统计信息
-    click.echo("\n[丢包统计]")
-    click.echo(f"  被动连接拒绝: {health.rejected_passive or 0}")
-    click.echo(f"  已建立连接拒绝: {health.rejected_established or 0}")
-    click.echo(f"  tcp_tw_recycle状态: {'开启' if health.tcp_tw_recycle else '关闭'}")
-    
-    # 显示建议
-    if advice:
-        click.secho("\n[问题诊断]", fg='yellow')
-        for msg in advice:
-            lines = msg.split('\n')
-            click.secho(lines[0], fg='red' if lines[0].startswith("⚠️") else 'yellow')
-            for line in lines[1:]:
-                if line.strip():
-                    click.echo(f"  {line}")
-    else:
-        click.secho("\n[状态] ✅ 未检测到时间戳机制导致的丢包", fg='green')
-
-def check_tcp_disorder():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 TCP乱序丢包检测 (待实现)", fg='cyan', bold=True)
-    health, advice = monitor.check_tcp_disorder()
-    for msg in advice:
-        click.echo(f"  {msg}")
-
-def check_tcp_congestion():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 TCP拥塞控制检测 (待实现)", fg='cyan', bold=True)
-    health, advice = monitor.check_tcp_congestion()
-    for msg in advice:
-        click.echo(f"  {msg}")
-
-def check_tcp_lowlat():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 低时延网络TCP检测 (部分实现)", fg='cyan', bold=True)
-    health, advice = monitor.check_tcp_low_latency()
-    
-    click.echo("\n[当前配置]")
-    for msg in filter(lambda x: not x.startswith(('\n','⏳','⚠️','🔧')), advice[:1]):
-        click.echo(f"  {msg}")
-        
-    click.secho("\n[待实现功能]", fg='yellow')
-    for msg in advice[1:]:
-        if msg.strip():
-            prefix = "  " if not msg.startswith(('⏳','⚠️','🔧')) else ""
-            click.secho(f"{prefix}{msg}", 
-                fg='red' if msg.startswith('⚠️') else 'yellow')
-
-def check_udp_loss():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 UDP丢包检测 (待实现)", fg='cyan', bold=True)
-    health, advice = monitor.check_udp_loss()
-    for msg in advice:
-        click.echo(f"  {msg}")
-
-
-def check_sock_buf():
-    """网络诊断工具"""
-    from lpm import get_network_monitor
-    monitor = get_network_monitor()
-
-    click.secho("\n🔍 Socket缓冲区检测 (待实现)", fg='cyan', bold=True)
-    health, advice = monitor.check_socket_buffer()
-    for msg in advice:
-        click.echo(f"  {msg}")
-
-@click.command()
-@click.option('--interval', default=1.0, help='刷新间隔(秒)')
-@click.option('--interface', default=None, help='监控的网卡名称')
-@click.option('--list', default=False, help='列出所有可用网卡')
-@click.option('--check', default=False, help='系统网络情况检测')
-@click.option('--verbose', default=False, help='显示详细信息')
-def monitor(interval, interface, list, check, verbose):
-    """网络性能监控工具"""
-
-    if list:
-        interfaces = lpm.list_network_interfaces()
-        click.echo("🖇️ 可用网卡: " + ", ".join(interfaces))
-        return
-
-    if check:
-        check_ringbuffer()
-        check_network(interface, verbose)
-        check_arp(verbose)
-        check_connect_track()
-        check_ip_fragment()
-        check_tcp_timewait()
-        check_tcp_connectqueue()
-        check_syn_flood()
-        check_tcp_timestamp()
-        check_tcp_disorder()
-        check_tcp_congestion()
-        check_tcp_lowlat()
-        check_udp_loss()
-        check_sock_buf()
-        return
-
+@memory.command()
+def structure():
+    """显示内存结构分析"""
     try:
-        while True:
-            click.clear()
-            # 显示基础信息
-            #click.echo(f"🖥️  CPU: {cpu_usage(interval):.1f}%")
-            #mem = memory_usage()
-            #click.echo(f"💾 内存: {mem.used/1024**2:.1f}/{mem.total/1024**2:.1f} MB")
-            
-            # 显示网络信息
-            display_network(interface, interval)
+        monitor = get_monitor()
+        monitor.print_memory_structure_report()
+    except Exception as e:
+        click.secho(f"❌ 获取内存结构失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
 
-            sleep(interval)
+@memory.command('top-processes')
+@click.option('--top', default=10, type=int, help='显示前 N 个进程')
+def top_processes(top):
+    """显示内存占用最多的进程"""
+    try:
+        monitor = get_monitor()
+        processes = monitor.get_top_memory_processes(top_n=top)
+        
+        if not processes:
+            click.secho("❌ 无法获取进程列表", fg='red')
+            return
+        
+        click.secho(f"\n🔝 内存占用 TOP {top} 进程", fg='cyan', bold=True)
+        click.echo()
+        
+        # 表头
+        header = (
+            f"{'排名':<6} {'PID':<10} {'用户':<12} "
+            f"{'RSS (MB)':<12} {'VSZ (MB)':<12} {'命令':<40}"
+        )
+        click.echo(header)
+        click.echo("-" * 92)
+        
+        # 数据行
+        for i, proc in enumerate(processes, 1):
+            cmd_short = proc['cmd'][:40]
+            line = (
+                f"{i:<6} {proc['pid']:<10} {proc['user']:<12} "
+                f"{proc['rss_mb']:<12.1f} {proc['vsz_mb']:<12.1f} "
+                f"{cmd_short:<40}"
+            )
+            click.echo(line)
+        
+        click.echo()
+        
+    except Exception as e:
+        click.secho(f"❌ 获取进程列表失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
+
+@memory.command('process-info')
+@click.option('--pid', type=int, required=True, help='进程 ID')
+def process_info(pid):
+    """获取指定进程的内存信息"""
+    try:
+        monitor = get_monitor()
+        mem_info = monitor.get_process_memory(pid)
+        
+        if not mem_info or mem_info.get('rss') == 0:
+            click.secho(
+                f"❌ 无法获取进程 {pid} 的信息（进程不存在？）", 
+                fg='red'
+            )
+            return
+        
+        click.secho(f"\n📋 进程 {pid} 内存信息", fg='cyan', bold=True)
+        click.echo()
+        click.echo(
+            f"  RSS (物理内存):   {mem_info['rss'] / (1024**2):8.2f} MB"
+        )
+        click.echo(
+            f"  VMS (虚拟内存):   {mem_info['vms'] / (1024**2):8.2f} MB"
+        )
+        click.echo(
+            f"  共享内存:         {mem_info['shared'] / (1024**2):8.2f} MB"
+        )
+        click.echo(
+            f"  独占内存 (USS):   {mem_info['uss'] / (1024**2):8.2f} MB"
+        )
+        click.echo()
+        
+    except Exception as e:
+        click.secho(f"❌ 获取进程信息失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
+
+@memory.command()
+@click.option('--duration', default=60, type=int, help='监控时长（秒）')
+@click.option('--interval', default=1.0, type=float, help='采样间隔（秒）')
+def monitor(duration, interval):
+    """监控内存使用趋势并生成报告
+    
+    示例:
+    
+        python -m lpm.cli memory monitor --duration 120 --interval 2
+    """
+    try:
+        mon = get_monitor()
+        click.secho(
+            f"\n📊 开始内存监控 (时长 {duration}s, 间隔 {interval}s)", 
+            fg='cyan', 
+            bold=True
+        )
+        click.echo()
+        
+        # 运行监控
+        analysis = mon.monitor_memory_trend(
+            interval=interval,
+            duration=duration
+        )
+        
+        # 显示分析结果
+        click.secho("\n📋 分析结果", fg='cyan', bold=True)
+        click.echo()
+        
+        click.echo(f"监控时长: {analysis['duration']:.1f}秒")
+        click.echo(f"采样次数: {analysis['samples']}")
+        
+        # 内存趋势
+        mem_trend = analysis.get('memory_trend', {})
+        if mem_trend:
+            click.echo("\n📈 内存趋势:")
+            click.echo(f"  起始内存: {mem_trend['used_start_gb']:.2f}GB")
+            click.echo(f"  结束内存: {mem_trend['used_end_gb']:.2f}GB")
+            click.echo(f"  最大内存: {mem_trend['used_max_gb']:.2f}GB")
+            
+            delta = mem_trend['used_delta_gb']
+            if delta > 0.5:
+                delta_msg = f"+{delta:.2f}GB (⚠️ 疑似内存泄漏)"
+                delta_str = click.style(delta_msg, fg='red', bold=True)
+                click.echo(f"  内存增长: {delta_str}")
+            elif delta < -0.1:
+                click.echo(f"  内存下降: {delta:.2f}GB")
+            else:
+                click.echo(f"  内存变化: {delta:+.2f}GB (平稳)")
+            
+            click.echo(f"  趋势: {mem_trend['trend']}")
+        
+        # Swap 趋势
+        swap_trend = analysis.get('swap_trend', {})
+        if swap_trend:
+            click.echo("\n🔄 Swap 趋势:")
+            click.echo(f"  换入页数: {swap_trend['swap_in_total']:,d}")
+            click.echo(f"  换出页数: {swap_trend['swap_out_total']:,d}")
+            click.echo(f"  Swap使用率: {swap_trend['swap_percent_end']:.1f}%")
+            click.echo(f"  压力等级: {swap_trend['swap_pressure']}")
+            click.echo(f"  性能影响: {swap_trend['swap_io_impact']}")
+            if swap_trend.get('recommendation'):
+                click.echo(f"  建议: {swap_trend['recommendation']}")
+        
+        # 压力指标
+        pressure_trend = analysis.get('pressure_trend', {})
+        if pressure_trend:
+            click.echo("\n⚡ 内存压力变化:")
+            click.echo(f"  缺页增长: {pressure_trend['page_faults_delta']:,d}")
+            click.echo(f"  主缺页增长: {pressure_trend['major_faults_delta']:,d}")
+            click.echo(f"  页扫描增长: {pressure_trend['pgscan_delta']:,d}")
+            click.echo(f"  回收效率: {pressure_trend['reclaim_efficiency']:.1f}%")
+        
+        # 问题列表
+        issues = analysis.get('issues', [])
+        if issues:
+            click.secho("\n🔍 检测到的问题:", fg='yellow', bold=True)
+            for issue in issues:
+                click.echo(f"  {issue}")
+        else:
+            click.secho("\n✅ 未检测到明显问题", fg='green', bold=True)
+        
+        click.secho(
+            "\n📁 详细报告已保存到 out/memory/ 目录:", 
+            fg='green', 
+            bold=True
+        )
+        click.echo("  • 原始数据: memory_raw_YYYYMMDD_HHMMSS.json")
+        click.echo("  • 内存分布图: memory_distribution_*.png")
+        click.echo("  • 回收效率图: reclaim_efficiency_*.png")
+        click.echo("  • 缺页趋势图: page_faults_*.png")
+        click.echo("  • Swap活动图: swap_activity_*.png")
+        click.echo("  • 内存趋势图: memory_trend_*.png")
+        click.echo("  • 内存结构图: memory_structure_*.png")
+        click.echo("  • 仪表盘图: dashboard_*.png")
+        click.echo()
+        
     except KeyboardInterrupt:
-        click.echo("\n监控已停止")
+        click.secho("\n⚠️  监控已中断", fg='yellow')
+    except Exception as e:
+        click.secho(f"❌ 监控失败: {e}", fg='red', bold=True)
+        import traceback
+        traceback.print_exc()
+
+# ============================================================================
+# 网络监控命令组
+# ============================================================================
+
+@cli.group()
+def network():
+    """网络监控和诊断工具"""
+    pass
+
+@network.command('monitor-net')
+@click.option('--interface', default=None, help='指定网卡名称')
+@click.option('--interval', default=1.0, type=float, help='刷新间隔（秒）')
+def monitor_net(interface, interval):
+    """实时监控网卡流量"""
+    try:
+        click.secho(f"\n📡 网络流量监控", fg='cyan', bold=True)
+        if interface:
+            click.echo(f"网卡: {interface}")
+        click.echo()
+        
+        while True:
+            sleep(interval)
+            
+    except KeyboardInterrupt:
+        click.secho("\n⚠️  监控已停止", fg='yellow')
+    except Exception as e:
+        click.secho(f"❌ 监控错误: {e}", fg='red', bold=True)
+
+@network.command()
+def check():
+    """网络健康检查"""
+    try:
+        click.secho("\n🔍 网络健康检查", fg='cyan', bold=True)
+        click.echo("检查中...")
+        click.echo()
+    except Exception as e:
+        click.secho(f"❌ 检查失败: {e}", fg='red', bold=True)
+
+@network.command()
+def list_interfaces():
+    """列出所有网卡"""
+    try:
+        click.secho("\n📋 系统网卡列表", fg='cyan', bold=True)
+        click.echo()
+    except Exception as e:
+        click.secho(f"❌ 获取网卡列表失败: {e}", fg='red', bold=True)
+
+# ============================================================================
+# 主命令
+# ============================================================================
+
+@cli.command()
+@click.option('--version', is_flag=True, help='显示版本')
+def info(version):
+    """显示工具信息"""
+    if version:
+        click.echo("Version: 1.0.0")
+    else:
+        click.secho("\n🎯 Linux 性能和稳定性监控工具", fg='cyan', bold=True)
+        click.echo("\n使用命令:")
+        click.echo("  memory status           - 显示当前内存状态")
+        click.echo("  memory health           - 检查内存健康状态")
+        click.echo("  memory structure        - 显示内存结构分析")
+        click.echo("  memory top-processes    - 显示TOP进程")
+        click.echo("  memory process-info     - 查看进程信息")
+        click.echo("  memory monitor          - 监控趋势")
+        click.echo()
+        click.echo("  network check           - 网络健康检查")
+        click.echo("  network monitor-net     - 监控流量")
+        click.echo()
 
 if __name__ == '__main__':
-    monitor()
+    cli()
